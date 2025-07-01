@@ -1,0 +1,803 @@
+--[[
+    Admin Menu Script for Roblox Mobile Executors
+    Version: 2.0 (Structured)
+
+    Features:
+    - Draggable floating button to toggle menu
+    - Smooth slide-in menu from the left
+    - Toggles for Flight, Noclip, ESP, Speed
+    - Sliders for Flight and Speed values with real-time value display
+    - Placeholder buttons for other common admin actions
+    - Improved drag logic for floating button with boundary checks
+    - Organized and commented code structure
+--]]
+
+--=============================================================================
+-- SERVICES
+--=============================================================================
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+
+--=============================================================================
+-- CORE PLAYER & GAME VARIABLES
+--=============================================================================
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character -- Attempt to get character immediately
+local Humanoid -- Declare, will be assigned if character exists or on CharacterAdded
+local RootPart -- Declare, will be assigned if character exists or on CharacterAdded
+
+-- Store original player stats for restoration
+local originalWalkSpeed = 16 -- Default walkspeed, will be updated if character/humanoid exists
+local originalJumpPower = Humanoid and Humanoid.JumpPower or 0 -- Default jump power, will be updated
+
+if Character then
+    Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    RootPart = Character:FindFirstChild("HumanoidRootPart") -- Changed from WaitForChild
+    if Humanoid then
+        originalWalkSpeed = Humanoid.WalkSpeed
+        originalJumpPower = Humanoid.JumpPower
+    else
+        -- If humanoid is not found immediately, CharacterAdded will handle it.
+        print("Admin Menu: Humanoid not found on initial character, will wait for CharacterAdded.")
+    end
+else
+    print("Admin Menu: Character not found initially, will wait for CharacterAdded.")
+end
+
+--=============================================================================
+-- ADMIN FEATURE STATE VARIABLES
+--=============================================================================
+local isFlying = false
+local noclipEnabled = false
+local espEnabled = false
+local speedEnabled = false -- True if speed override is active
+
+-- Flight Specific Variables
+local flightBodyVelocity = nil
+local flightBodyGyro = nil
+local flightRenderSteppedConnection = nil -- To manage the flight movement loop
+
+-- Noclip Specific Variables
+local originalCollisionStates = {} -- Stores original CanCollide states of parts
+
+-- ESP Specific Variables
+local espConnections = {}       -- Stores event connections for ESP (player added/removed, char added)
+local espBillboardGuis = {}   -- Stores BillboardGuis for each player's ESP
+local espRenderSteppedConnection = nil -- To manage the ESP update loop
+
+--=============================================================================
+-- UI INSTANCE VARIABLE DECLARATIONS (Forward declaration for organization)
+--=============================================================================
+local screenGui, floatingButton, mainMenu, closeButton
+local flightButton, noclipButton, espButton, speedButton -- These are the TextButtons
+local flightControlFrame, speedControlFrame -- Frames to hold button + slider
+local flightSlider, speedSlider             -- These are the slider Frame instances
+local teleportButton, killPlayerButton, viewScriptsButton, btoolsButton -- Placeholder buttons
+
+--=============================================================================
+-- UI CONFIGURATION
+--=============================================================================
+local MENU_WIDTH = 250
+local MENU_HEIGHT = 420 -- Increased height for more buttons and padding
+local BUTTON_HEIGHT = 35
+local CONTROL_FRAME_HEIGHT = BUTTON_HEIGHT + 30 + 5 -- Button + Slider + Padding
+local PADDING = 8
+
+--=============================================================================
+-- FORWARD DECLARATIONS OF FUNCTIONS (If needed for complex call order)
+--=============================================================================
+local toggleMenu -- For floatingButton and closeButton
+local getFlightSpeed -- Getter from flight slider, returned by createSlider
+local getWalkSpeed   -- Getter from speed slider, returned by createSlider
+local applySpeed     -- Function to apply walk speed
+
+--=============================================================================
+-- INITIAL UI SETUP (ScreenGui, Floating Button, Main Menu, Close Button)
+--=============================================================================
+screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AdminMenuGui"
+screenGui.ResetOnSpawn = false -- GUI persists through respawn
+screenGui.Parent = CoreGui     -- Standard for executor GUIs
+
+floatingButton = Instance.new("TextButton")
+floatingButton.Name = "FloatingAdminButton"
+floatingButton.Text = "≡" -- Switched to "Identical To" (U+2261) as an alternative hamburger icon, potentially more widely supported.
+floatingButton.TextColor3 = Color3.fromRGB(220, 222, 225) -- Discord's light grey text
+floatingButton.BackgroundColor3 = Color3.fromRGB(44, 47, 51) -- Discord's dark grey (e.g. #2C2F33)
+floatingButton.BorderSizePixel = 0 -- Remove border, UICorner will define shape
+floatingButton.Size = UDim2.new(0, 50, 0, 50) -- Make it square for a typical floating action button
+floatingButton.Position = UDim2.new(0, 20, 0.5, -25) -- Adjust Y position for new size
+floatingButton.Font = Enum.Font.SourceSansBold -- Bold for icon
+floatingButton.TextSize = 28 -- Larger for icon
+floatingButton.AutoButtonColor = true 
+floatingButton.ZIndex = 10 
+floatingButton.Parent = screenGui
+
+local floatingButtonCorner = Instance.new("UICorner") -- Renamed for clarity
+floatingButtonCorner.CornerRadius = UDim.new(0, 12) -- Rounded corners, 12px radius
+floatingButtonCorner.Parent = floatingButton
+
+mainMenu = Instance.new("Frame")
+mainMenu.Name = "MainMenuFrame"
+mainMenu.ZIndex = 5 
+mainMenu.BackgroundColor3 = Color3.fromRGB(54, 57, 63) -- Discord's main dark background (e.g., #36393F)
+mainMenu.BorderSizePixel = 0 -- Remove border if using UICorner for main shape
+mainMenu.Size = UDim2.new(0, MENU_WIDTH, 0, MENU_HEIGHT)
+mainMenu.Position = UDim2.new(-1, 0, 0.5, -MENU_HEIGHT / 2) 
+mainMenu.Visible = false
+mainMenu.ClipsDescendants = true
+mainMenu.Parent = screenGui
+
+local mainMenuCorner = Instance.new("UICorner")
+mainMenuCorner.CornerRadius = UDim.new(0, 8) -- Slightly rounded corners for the menu
+mainMenuCorner.Parent = mainMenu
+
+closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseMenuButton"
+closeButton.Text = "✕" -- Nicer X
+closeButton.TextColor3 = Color3.fromRGB(185, 187, 190) -- Discord's muted text color
+closeButton.BackgroundTransparency = 1 -- Transparent background
+closeButton.Size = UDim2.new(0, 32, 0, 32)
+closeButton.Position = UDim2.new(1, - (32 + PADDING / 2), 0, PADDING / 2) 
+closeButton.Font = Enum.Font.SourceSansSemibold
+closeButton.TextSize = 22
+closeButton.Parent = mainMenu
+-- Add a hover effect for the close button (optional, but nice)
+closeButton.MouseEnter:Connect(function() closeButton.TextColor3 = Color3.fromRGB(255,255,255) end)
+closeButton.MouseLeave:Connect(function() closeButton.TextColor3 = Color3.fromRGB(185, 187, 190) end)
+
+
+local buttonLayout = Instance.new("UIListLayout")
+buttonLayout.Parent = mainMenu
+buttonLayout.FillDirection = Enum.FillDirection.Vertical
+buttonLayout.SortOrder = Enum.SortOrder.LayoutOrder
+buttonLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+buttonLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+buttonLayout.Padding = UDim.new(0, PADDING / 2) -- Padding between items in list
+-- Add top padding to the layout itself by adjusting its position or adding an invisible top frame
+local topPaddingFrame = Instance.new("Frame")
+topPaddingFrame.Name = "TopPadding"
+topPaddingFrame.Size = UDim2.new(1,0,0,PADDING*2) -- Space for close button and then some
+topPaddingFrame.BackgroundTransparency = 1
+topPaddingFrame.LayoutOrder = 0 -- Before any buttons
+topPaddingFrame.Parent = mainMenu
+
+
+--=============================================================================
+-- UI ELEMENT CREATION FUNCTIONS
+--=============================================================================
+
+-- Creates a basic toggle button UI (functionality connected separately)
+local function createToggleButtonUi(name, text, order)
+    local button = Instance.new("TextButton")
+    button.Name = name .. "Button"
+    button.Text = text .. ": OFF"
+    button.TextColor3 = Color3.fromRGB(220, 222, 225) -- Discord light grey text
+    button.BackgroundColor3 = Color3.fromRGB(71, 75, 80) -- Slightly lighter dark grey for buttons
+    button.BorderSizePixel = 0
+    button.Size = UDim2.new(0, MENU_WIDTH - (PADDING * 3), 0, BUTTON_HEIGHT)
+    button.Font = Enum.Font.SourceSansSemibold
+    button.TextSize = 15
+    button.AutoButtonColor = false 
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 6)
+    btnCorner.Parent = button
+    return button
+end
+
+-- Creates a slider UI element with drag logic
+local function createSliderUi(sliderName, minValue, maxValue, defaultValue, parentControlFrame)
+    local sliderTrack = Instance.new("Frame")
+    sliderTrack.Name = sliderName .. "SliderTrack"
+    sliderTrack.BackgroundColor3 = Color3.fromRGB(44, 47, 51) -- Darker track background
+    sliderTrack.BorderSizePixel = 0
+    sliderTrack.Size = UDim2.new(0, MENU_WIDTH - (PADDING * 6), 0, 16) -- Adjusted padding for centering
+    sliderTrack.Position = UDim2.new(0.5, 0, 0, BUTTON_HEIGHT + PADDING / 2)
+    sliderTrack.AnchorPoint = Vector2.new(0.5, 0)
+    sliderTrack.Parent = parentControlFrame
+    local trackCorner = Instance.new("UICorner")
+    trackCorner.CornerRadius = UDim.new(0,8)
+    trackCorner.Parent = sliderTrack
+
+    local thumb = Instance.new("TextButton")
+    thumb.Name = "Thumb"
+    thumb.BackgroundColor3 = Color3.fromRGB(114, 137, 218) -- Discord blurple
+    thumb.BorderSizePixel = 0
+    thumb.Size = UDim2.new(0, 28, 1, 0) -- Slightly larger thumb
+    thumb.Font = Enum.Font.SourceSansSemibold
+    thumb.TextSize = 10
+    thumb.TextColor3 = Color3.fromRGB(255,255,255)
+    thumb.Parent = sliderTrack
+    thumb.AutoButtonColor = false
+    thumb.ZIndex = 2
+    local thumbCorner = Instance.new("UICorner")
+    thumbCorner.CornerRadius = UDim.new(0,6)
+    thumbCorner.Parent = thumb
+
+
+    local valueLabel = Instance.new("TextLabel")
+    valueLabel.Name = sliderName .. "ValueLabel"
+    valueLabel.Size = UDim2.new(0, 40, 1, 0) -- Increased size for label
+    valueLabel.Position = UDim2.new(1, PADDING / 2 + 5, 0, 0) 
+    valueLabel.Font = Enum.Font.SourceSans
+    valueLabel.TextSize = 13
+    valueLabel.TextColor3 = Color3.fromRGB(185, 187, 190) -- Muted text
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Left
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.Parent = sliderTrack
+
+    local currentValue = defaultValue
+    local isDraggingThumb = false
+    local thumbDragInput = nil -- Stores the specific input object that initiated thumb drag
+
+    local function updateThumbVisuals()
+        local trackWidth = sliderTrack.AbsoluteSize.X
+        local thumbWidth = thumb.AbsoluteSize.X
+        local formattedValue = string.format("%.1f", currentValue) -- Format value regardless of visual update success
+
+        if trackWidth <= 0 or (maxValue - minValue == 0) then 
+            -- If track isn't rendered or value range is zero, set thumb to start and update text
+            thumb.Position = UDim2.new(0, 0, 0, 0)
+            thumb.Text = formattedValue
+            valueLabel.Text = formattedValue
+            return
+        end
+
+        local percentage = (currentValue - minValue) / (maxValue - minValue)
+        percentage = math.clamp(percentage, 0, 1) -- Ensure percentage is within bounds
+
+        local effectiveTrackWidth = trackWidth - thumbWidth
+        -- If thumb is wider than track, it effectively has no room to move. Position at start.
+        if effectiveTrackWidth < 0 then effectiveTrackWidth = 0 end 
+
+        thumb.Position = UDim2.new(0, effectiveTrackWidth * percentage, 0, 0)
+        thumb.Text = formattedValue
+        valueLabel.Text = formattedValue
+    end
+
+    updateThumbVisuals() -- Set initial position and text
+
+    local function onThumbInput(input)
+        local relativeX = input.Position.X - sliderTrack.AbsolutePosition.X
+        local percentage = math.clamp(relativeX / sliderTrack.AbsoluteSize.X, 0, 1)
+        currentValue = minValue + (maxValue - minValue) * percentage
+        updateThumbVisuals()
+    end
+
+    thumb.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            isDraggingThumb = true
+            thumbDragInput = input -- Store the input object
+            onThumbInput(input) -- Update on initial press too
+
+            local inputChangedConnection
+            local inputEndedConnection
+
+            inputChangedConnection = UserInputService.InputChanged:Connect(function(changedInput)
+                if isDraggingThumb and thumbDragInput and changedInput.UserInputType == thumbDragInput.UserInputType then
+                    onThumbInput(changedInput)
+                end
+            end)
+            
+            inputEndedConnection = UserInputService.InputEnded:Connect(function(endedInput)
+                if isDraggingThumb and thumbDragInput and endedInput.UserInputType == thumbDragInput.UserInputType then
+                    isDraggingThumb = false
+                    thumbDragInput = nil
+                    if inputChangedConnection then inputChangedConnection:Disconnect() end
+                    if inputEndedConnection then inputEndedConnection:Disconnect() end -- Disconnect self
+
+                    print(sliderName .. " slider final value: " .. string.format("%.1f", currentValue))
+                    -- Trigger actions based on slider name if needed (e.g., applySpeed)
+                    if sliderName == "Speed" and speedEnabled then applySpeed() end
+                    if sliderName == "FlightSpeed" and isFlying then 
+                        -- Flight speed is read by RenderStepped, but a print is fine
+                        print("Flight speed set to: " .. getFlightSpeed())
+                    end
+                end
+            end)
+        end
+    end)
+    
+    sliderTrack.InputBegan:Connect(function(input) -- Allow clicking on track
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            onThumbInput(input) -- Calculate position based on click
+            -- Also trigger final value actions
+            print(sliderName .. " slider set by track click: " .. string.format("%.1f", currentValue))
+            if sliderName == "Speed" and speedEnabled then applySpeed() end
+            if sliderName == "FlightSpeed" and isFlying then print("Flight speed set to: " .. getFlightSpeed()) end
+        end
+    end)
+    
+    -- Return the main slider frame, a getter for its value, and the visual update function
+    return sliderTrack, function() return currentValue end, updateThumbVisuals
+end
+
+-- Creates a placeholder button UI
+local function createPlaceholderButtonUi(name, text, order)
+    local button = Instance.new("TextButton")
+    button.Name = name .. "Button"
+    button.Text = text
+    button.TextColor3 = Color3.fromRGB(200, 202, 205) -- Slightly brighter muted text
+    button.BackgroundColor3 = Color3.fromRGB(71, 75, 80) -- Consistent with toggle buttons
+    button.BorderSizePixel = 0
+    button.Size = UDim2.new(0, MENU_WIDTH - (PADDING * 3), 0, BUTTON_HEIGHT)
+    button.Font = Enum.Font.SourceSansSemibold
+    button.TextSize = 15
+    button.AutoButtonColor = true 
+
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 6)
+    btnCorner.Parent = button
+    return button
+end
+
+--=============================================================================
+-- INSTANTIATE UI ELEMENTS & CONTROL FRAMES
+--=============================================================================
+
+-- Temporarily comment out most items to test with a single button
+--[[ -- Start Isolation Block
+
+-- Flight Button and Slider
+flightControlFrame = Instance.new("Frame")
+flightControlFrame.Name = "FlightControlFrame"
+flightControlFrame.BackgroundTransparency = 1
+flightControlFrame.Size = UDim2.new(1, 0, 0, CONTROL_FRAME_HEIGHT)
+flightControlFrame.LayoutOrder = 1
+flightControlFrame.Parent = mainMenu
+flightButton = createToggleButtonUi("Flight", "Flight", 1)
+flightButton.Parent = flightControlFrame
+flightButton.Position = UDim2.new(0.5, 0, 0, PADDING/2)
+flightButton.AnchorPoint = Vector2.new(0.5, 0)
+local flightSliderInstance, getFlightSpeed_orig, updateFlightVis = createSliderUi("FlightSpeed", 1, 150, 50, flightControlFrame)
+getFlightSpeed = getFlightSpeed_orig -- Assign to forward-declared global
+flightSlider = flightSliderInstance -- Assign to UI instance variable for script access if needed
+
+--]] -- End Flight Button and Slider Isolation
+
+-- Noclip Button (Test Item)
+noclipButton = createToggleButtonUi("Noclip", "Noclip Test", 2) -- Original order param was 2, text changed for clarity
+noclipButton.LayoutOrder = 1 -- Changed to 1 for testing, directly after topPaddingFrame (LayoutOrder 0)
+noclipButton.Parent = mainMenu
+
+--[[ -- Start Isolation Block
+
+-- ESP Button
+espButton = createToggleButtonUi("ESP", "ESP", 3)
+espButton.LayoutOrder = 3
+espButton.Parent = mainMenu
+
+-- Speed Button and Slider
+speedControlFrame = Instance.new("Frame")
+speedControlFrame.Name = "SpeedControlFrame"
+speedControlFrame.BackgroundTransparency = 1
+speedControlFrame.Size = UDim2.new(1, 0, 0, CONTROL_FRAME_HEIGHT)
+speedControlFrame.LayoutOrder = 4
+speedControlFrame.Parent = mainMenu
+speedButton = createToggleButtonUi("Speed", "Speed", 4)
+speedButton.Parent = speedControlFrame
+speedButton.Position = UDim2.new(0.5, 0, 0, PADDING/2)
+speedButton.AnchorPoint = Vector2.new(0.5, 0)
+local speedSliderInstance, getWalkSpeed_orig, updateSpeedVis = createSliderUi("Speed", 16, 250, originalWalkSpeed, speedControlFrame)
+getWalkSpeed = getWalkSpeed_orig -- Assign to forward-declared global
+speedSlider = speedSliderInstance -- Assign to UI instance variable
+
+-- Placeholder Buttons
+teleportButton = createPlaceholderButtonUi("TeleportToPlayer", "Teleport to Player", 5)
+teleportButton.LayoutOrder = 5; teleportButton.Parent = mainMenu
+killPlayerButton = createPlaceholderButtonUi("KillPlayer", "Kill Player", 6)
+killPlayerButton.LayoutOrder = 6; killPlayerButton.Parent = mainMenu
+viewScriptsButton = createPlaceholderButtonUi("ViewServerScripts", "View Server Scripts", 7)
+viewScriptsButton.LayoutOrder = 7; viewScriptsButton.Parent = mainMenu
+btoolsButton = createPlaceholderButtonUi("Btools", "Btools", 8)
+btoolsButton.LayoutOrder = 8; btoolsButton.Parent = mainMenu
+
+--]] -- End Isolation Block
+
+--=============================================================================
+-- CORE ADMIN FEATURE FUNCTIONS
+--=============================================================================
+
+-- Helper to safely get player character
+local function getPlayerCharacter(player)
+    return player and player.Character
+end
+
+-- Flight Implementation
+local function toggleFlight(enable)
+    Character = getPlayerCharacter(LocalPlayer)
+    if not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
+    RootPart = Character.HumanoidRootPart
+    Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    if not Humanoid then return end
+
+    isFlying = enable
+    if enable then
+        if not flightBodyVelocity then
+            flightBodyVelocity = Instance.new("BodyVelocity", RootPart)
+            flightBodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            flightBodyVelocity.P = 10000 -- Proportionality constant
+        end
+        if not flightBodyGyro then
+            flightBodyGyro = Instance.new("BodyGyro", RootPart)
+            flightBodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+            flightBodyGyro.P = 10000
+        end
+        flightBodyVelocity.Velocity = Vector3.new(0,0.1,0) -- Slight initial lift
+        flightBodyGyro.CFrame = RootPart.CFrame
+        Humanoid.PlatformStand = true
+        
+        if not flightRenderSteppedConnection or not flightRenderSteppedConnection.Connected then
+            flightRenderSteppedConnection = RunService.RenderStepped:Connect(function()
+                if isFlying and flightBodyVelocity and flightBodyGyro and RootPart and Workspace.CurrentCamera then
+                    local camera = Workspace.CurrentCamera
+                    local speed = getFlightSpeed()
+                    local direction = camera.CFrame.LookVector
+                    flightBodyVelocity.Velocity = direction * speed
+                    flightBodyGyro.CFrame = camera.CFrame
+                else -- Auto-disable if conditions unmet (e.g., character died while flying)
+                    if isFlying then toggleFlight(false) end
+                end
+            end)
+        end
+    else
+        if flightRenderSteppedConnection and flightRenderSteppedConnection.Connected then
+            flightRenderSteppedConnection:Disconnect()
+            flightRenderSteppedConnection = nil
+        end
+        if flightBodyVelocity then flightBodyVelocity:Destroy(); flightBodyVelocity = nil; end
+        if flightBodyGyro then flightBodyGyro:Destroy(); flightBodyGyro = nil; end
+        if Humanoid then Humanoid.PlatformStand = false; end
+    end
+    print("Flight " .. (enable and "Enabled" or "Disabled"))
+end
+
+-- Noclip Implementation
+local function toggleNoclip(enable)
+    Character = getPlayerCharacter(LocalPlayer)
+    -- Ensure character, humanoid, and rootpart are available
+    if not Character or not Character:FindFirstChild("HumanoidRootPart") then
+        print("Noclip: Character or HumanoidRootPart not found.")
+        return
+    end
+    Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    if not Humanoid then
+        print("Noclip: Humanoid not found.")
+        return
+    end
+
+    noclipEnabled = enable
+
+    for _, part in ipairs(Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if enable then
+                originalCollisionStates[part] = part.CanCollide
+                part.CanCollide = false
+            else
+                if originalCollisionStates[part] ~= nil then
+                    part.CanCollide = originalCollisionStates[part]
+                end
+            end
+        end
+    end
+    if Humanoid then
+        local state = not enable -- True to enable states, False to disable (for noclip)
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.GettingUp, state)
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, state)
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, state)
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, state)
+        Humanoid:ChangeState(enable and Enum.HumanoidStateType.Physics or Enum.HumanoidStateType.Running)
+    end
+    print("Noclip " .. (enable and "Enabled" or "Disabled"))
+end
+
+-- ESP Implementation
+local function updateEspTarget(player)
+    local playerChar = getPlayerCharacter(player)
+    local head = playerChar and playerChar:FindFirstChild("Head")
+
+    if not head or player == LocalPlayer then -- No head or self
+        if espBillboardGuis[player] then
+            espBillboardGuis[player]:Destroy()
+            espBillboardGuis[player] = nil
+        end
+        return
+    end
+
+    if not espBillboardGuis[player] or not espBillboardGuis[player].Parent then
+        if espBillboardGuis[player] then espBillboardGuis[player]:Destroy() end -- Clean old if parentless
+
+        local billboardGui = Instance.new("BillboardGui")
+        billboardGui.Name = "PlayerESP_" .. player.UserId
+        billboardGui.Adornee = head
+        billboardGui.Size = UDim2.new(0, 120, 0, 22)
+        billboardGui.StudsOffset = Vector3.new(0, 2.8, 0)
+        billboardGui.AlwaysOnTop = true
+        billboardGui.LightInfluence = 0
+        billboardGui.ResetOnSpawn = false -- Set to false because the script manages its lifecycle, preventing Roblox from automatically destroying/recreating it on respawn.
+
+        local textLabel = Instance.new("TextLabel")
+        textLabel.Name = "NameLabel"
+        textLabel.Text = player.DisplayName .. " (" .. player.Name .. ")"
+        textLabel.TextColor3 = player.TeamColor.Color or Color3.fromRGB(230,230,230)
+        textLabel.BackgroundColor3 = Color3.fromRGB(20,20,20)
+        textLabel.BackgroundTransparency = 0.3
+        textLabel.Size = UDim2.new(1,0,1,0)
+        textLabel.Font = Enum.Font.SourceSansSemibold
+        textLabel.TextSize = 13
+        textLabel.Parent = billboardGui
+        
+        espBillboardGuis[player] = billboardGui
+        billboardGui.Parent = CoreGui 
+    else
+        espBillboardGuis[player].Adornee = head -- Re-Adorn if character changed (e.g. respawn)
+        espBillboardGuis[player].Enabled = true
+    end
+end
+
+local function toggleEsp(enable)
+    espEnabled = enable
+    if enable then
+        local function setupPlayerEsp(player)
+            if player ~= LocalPlayer then
+                local charAddedKey = "CharAdded_" .. player.UserId
+                if espConnections[charAddedKey] then espConnections[charAddedKey]:Disconnect() end
+
+                espConnections[charAddedKey] = player.CharacterAdded:Connect(function(char)
+                    updateEspTarget(player) -- Update when new character loads
+                end)
+                if player.Character then updateEspTarget(player) end -- Initial update
+            end
+        end
+
+        for _, p in ipairs(Players:GetPlayers()) do setupPlayerEsp(p) end
+        if espConnections["PlayerAdded"] then espConnections["PlayerAdded"]:Disconnect() end
+        espConnections["PlayerAdded"] = Players.PlayerAdded:Connect(setupPlayerEsp)
+        
+        if espConnections["PlayerRemoving"] then espConnections["PlayerRemoving"]:Disconnect() end
+        espConnections["PlayerRemoving"] = Players.PlayerRemoving:Connect(function(removedPlayer)
+            if espBillboardGuis[removedPlayer] then
+                espBillboardGuis[removedPlayer]:Destroy()
+                espBillboardGuis[removedPlayer] = nil
+            end
+            local charAddedKey = "CharAdded_" .. removedPlayer.UserId
+            if espConnections[charAddedKey] then
+                espConnections[charAddedKey]:Disconnect()
+                espConnections[charAddedKey] = nil
+            end
+        end)
+        
+        if not espRenderSteppedConnection or not espRenderSteppedConnection.Connected then
+            espRenderSteppedConnection = RunService.RenderStepped:Connect(function()
+                if espEnabled then -- Check flag, connection might persist briefly after disable
+                    for _, p_loop in ipairs(Players:GetPlayers()) do
+                        if p_loop ~= LocalPlayer then updateEspTarget(p_loop) end
+                    end
+                end
+            end)
+        end
+    else
+        if espRenderSteppedConnection and espRenderSteppedConnection.Connected then
+            espRenderSteppedConnection:Disconnect()
+            espRenderSteppedConnection = nil
+        end
+        for _, gui in pairs(espBillboardGuis) do if gui then gui:Destroy() end end
+        espBillboardGuis = {}
+        for key, conn in pairs(espConnections) do if conn then conn:Disconnect() end end
+        espConnections = {}
+    end
+    print("ESP " .. (enable and "Enabled" or "Disabled"))
+end
+
+-- Speed Implementation
+function applySpeed() -- Forward-declared, defined here
+    Character = getPlayerCharacter(LocalPlayer)
+    if not Character then return end
+    Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    if not Humanoid then return end
+    
+    if speedEnabled then 
+        Humanoid.WalkSpeed = getWalkSpeed()
+    else
+        Humanoid.WalkSpeed = originalWalkSpeed
+    end
+end
+
+local function toggleSpeed(enable)
+    speedEnabled = enable
+    applySpeed() 
+    print("Speed Override " .. (enable and "Enabled with value: " .. getWalkSpeed() or "Disabled, speed reset to: " .. originalWalkSpeed))
+end
+
+--=============================================================================
+-- UI EVENT CONNECTIONS (Connecting buttons to functions)
+--=============================================================================
+-- Temporarily comment out event connections for isolated UI elements
+--[[ -- Start Isolation Block for Event Connections
+flightButton.MouseButton1Click:Connect(function()
+    toggleFlight(not isFlying) -- isFlying state is updated within toggleFlight
+    flightButton.Text = "Flight: " .. (isFlying and "ON" or "OFF")
+    flightButton.BackgroundColor3 = isFlying and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
+end)
+--]]
+
+noclipButton.MouseButton1Click:Connect(function() -- This connection remains for the test item
+    toggleNoclip(not noclipEnabled) -- noclipEnabled state is updated within toggleNoclip
+    noclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
+    noclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
+end)
+
+--[[ -- Start Isolation Block for Event Connections
+espButton.MouseButton1Click:Connect(function()
+    toggleEsp(not espEnabled) -- espEnabled state is updated within toggleEsp
+    espButton.Text = "ESP: " .. (espEnabled and "ON" or "OFF")
+    espButton.BackgroundColor3 = espEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
+end)
+
+speedButton.MouseButton1Click:Connect(function()
+    toggleSpeed(not speedEnabled) -- speedEnabled state is updated within toggleSpeed
+    speedButton.Text = "Speed: " .. (speedEnabled and "ON" or "OFF")
+    speedButton.BackgroundColor3 = speedEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
+end)
+
+-- Placeholder button connections (just print messages)
+teleportButton.MouseButton1Click:Connect(function() print("Teleport to Player button clicked (placeholder).") end)
+killPlayerButton.MouseButton1Click:Connect(function() print("Kill Player button clicked (placeholder).") end)
+viewScriptsButton.MouseButton1Click:Connect(function() print("View Server Scripts button clicked (placeholder).") end)
+btoolsButton.MouseButton1Click:Connect(function() print("Btools button clicked (placeholder).") end)
+--]] -- End Isolation Block for Event Connections
+
+--=============================================================================
+-- FLOATING BUTTON DRAGGABILITY & MENU TOGGLE LOGIC
+--=============================================================================
+local isFloatingButtonDragging = false -- Specific drag state for the floating menu button
+local floatingButtonDragStartPos = Vector2.new() -- Input.Position where drag started
+local floatingButtonOriginalUIPos = Vector2.new() -- Button.AbsolutePosition where drag started
+
+local function makeDraggable(button)
+    button.Active = true -- Ensure it can receive input
+    button.Draggable = false -- Disable built-in draggable if it was ever set true
+
+    local currentDragInputObject = nil -- Stores the specific InputObject that started the drag
+
+    button.InputBegan:Connect(function(inputObject)
+        if inputObject.UserInputType == Enum.UserInputType.MouseButton1 or inputObject.UserInputType == Enum.UserInputType.Touch then
+            isFloatingButtonDragging = true
+            floatingButtonDragStartPos = inputObject.Position 
+            floatingButtonOriginalUIPos = button.AbsolutePosition
+            currentDragInputObject = inputObject -- Keep track of this specific input
+
+            local inputChangedConnection
+            local inputEndedConnection
+            
+            inputChangedConnection = UserInputService.InputChanged:Connect(function(changedInputObject)
+                if not isFloatingButtonDragging or changedInputObject.UserInputType ~= currentDragInputObject.UserInputType then
+                    return -- Only process changes from the same input type that started this drag
+                end
+
+                if isFloatingButtonDragging then -- Check flag again, might have been set false by InputEnded
+                    local guiParent = button.Parent
+                    if not guiParent then return end
+                    
+                    local screen = guiParent.AbsoluteSize
+                    local delta = changedInputObject.Position - floatingButtonDragStartPos
+                    local newAbsolutePos = floatingButtonOriginalUIPos + delta
+                    local buttonSize = button.AbsoluteSize
+                    
+                    newAbsolutePos = Vector2.new(
+                        math.clamp(newAbsolutePos.X, 0, screen.X - buttonSize.X),
+                        math.clamp(newAbsolutePos.Y, 0, screen.Y - buttonSize.Y)
+                    )
+                    button.Position = UDim2.fromOffset(newAbsolutePos.X, newAbsolutePos.Y)
+                end
+            end)
+
+            inputEndedConnection = UserInputService.InputEnded:Connect(function(endedInputObject)
+                if endedInputObject.UserInputType == currentDragInputObject.UserInputType then
+                    isFloatingButtonDragging = false
+                    currentDragInputObject = nil
+                    if inputChangedConnection then inputChangedConnection:Disconnect() end
+                    if inputEndedConnection then inputEndedConnection:Disconnect() end -- Disconnect self
+                end
+            end)
+        end
+    end)
+    
+    -- The UserInputService.InputChanged and InputEnded connections are now managed
+    -- within the InputBegan event to ensure they are specific to a single drag operation
+    -- and are properly disconnected.
+end
+
+makeDraggable(floatingButton)
+
+-- Menu Toggle Functionality
+local menuOpen = false
+local menuTween = nil
+local menuTweenCompletedConnection = nil
+
+function toggleMenu() 
+    if not mainMenu then -- Ensure mainMenu exists before attempting any operations on it
+        print("AdminMenu Error: toggleMenu called but mainMenu is nil. Cannot open/close menu.")
+        return
+    end
+
+    if menuTween and menuTween.PlaybackState == Enum.PlaybackState.Playing then
+        menuTween:Cancel() -- Cancel any ongoing tween
+    end
+    if menuTweenCompletedConnection then
+        menuTweenCompletedConnection:Disconnect() -- Disconnect previous connection
+        menuTweenCompletedConnection = nil
+    end
+
+    menuOpen = not menuOpen
+    local goalPosition
+
+    if menuOpen then
+        mainMenu.Visible = true
+        mainMenu.ZIndex = 20 -- Bring menu to front when opening
+        task.wait() -- Allow UI to update AbsoluteSize if it was previously 0x0 due to Visible=false
+        if not screenGui or not mainMenu then return end -- Guard against Gui being destroyed
+
+        local targetPositionXScale = 0
+        local targetPositionXOffset = PADDING 
+        -- Ensure mainMenu.AbsoluteSize.Y is valid if screenGui.AbsoluteSize.Y is 0 (edge case)
+        local menuYPosition = screenGui.AbsoluteSize.Y > 0 and -mainMenu.AbsoluteSize.Y / 2 or 0
+        goalPosition = UDim2.new(targetPositionXScale, targetPositionXOffset, 0.5, menuYPosition)
+    else
+        if not screenGui or not mainMenu or mainMenu.AbsoluteSize.X == 0 or screenGui.AbsoluteSize.X == 0 then
+             -- Cannot reliably calculate target position if sizes are zero, just hide
+            mainMenu.Visible = false
+            mainMenu.ZIndex = 5
+            return
+        end
+        -- When closing, ZIndex can remain high during animation, then drop with visibility
+        local targetPositionXScale = - (mainMenu.AbsoluteSize.X / screenGui.AbsoluteSize.X) - 0.05 -- Extra margin
+        local targetPositionXOffset = 0
+        local menuYPosition = screenGui.AbsoluteSize.Y > 0 and -mainMenu.AbsoluteSize.Y / 2 or 0
+        goalPosition = UDim2.new(targetPositionXScale, targetPositionXOffset, 0.5, menuYPosition)
+    end
+    
+    local tweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out) 
+    menuTween = TweenService:Create(mainMenu, tweenInfo, {Position = goalPosition})
+    menuTween:Play()
+
+    menuTweenCompletedConnection = menuTween.Completed:Connect(function(state)
+        if menuTweenCompletedConnection then -- Check if it hasn't been disconnected by a new call
+            menuTweenCompletedConnection:Disconnect()
+            menuTweenCompletedConnection = nil
+        end
+        if state == Enum.TweenStatus.Completed then
+            if not menuOpen then 
+                mainMenu.Visible = false
+                mainMenu.ZIndex = 5 -- Set ZIndex back after it's hidden
+            end
+        end
+    end)
+end
+
+floatingButton.MouseButton1Click:Connect(toggleMenu)
+closeButton.MouseButton1Click:Connect(toggleMenu)
+
+--=============================================================================
+-- INITIALIZATION MESSAGE
+--=============================================================================
+print("Admin Menu Script Loaded (Structure V2)")
+-- Ensure Character references are up-to-date if player respawns
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+    Character = newChar
+    Humanoid = newChar:WaitForChild("Humanoid")
+    RootPart = newChar:WaitForChild("HumanoidRootPart")
+    originalWalkSpeed = Humanoid.WalkSpeed -- Update original speed from the new humanoid
+    originalJumpPower = Humanoid.JumpPower -- Update original jump power from the new humanoid
+
+    -- Re-apply states if they were active before respawn.
+    -- Toggling off then on ensures proper cleanup and re-initialization on the new character.
+    if isFlying then toggleFlight(false); toggleFlight(true); end
+    if noclipEnabled then toggleNoclip(false); toggleNoclip(true); end
+    if speedEnabled then applySpeed() end -- applySpeed uses the updated Character/Humanoid
+    -- ESP handles its own character updates via its Player.CharacterAdded listeners.
+end)
