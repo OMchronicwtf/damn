@@ -282,9 +282,55 @@ local function createPlaceholderButtonUi(name, text, order)
     return button
 end
 
-noclipButton = createToggleButtonUi("Noclip", "Noclip Test", 2)
-noclipButton.LayoutOrder = 1
+-- Flight Button and Slider
+flightControlFrame = Instance.new("Frame")
+flightControlFrame.Name = "FlightControlFrame"
+flightControlFrame.BackgroundTransparency = 1
+flightControlFrame.Size = UDim2.new(1, 0, 0, CONTROL_FRAME_HEIGHT)
+flightControlFrame.LayoutOrder = 1
+flightControlFrame.Parent = mainMenu
+flightButton = createToggleButtonUi("Flight", "Flight", 1)
+flightButton.Parent = flightControlFrame
+flightButton.Position = UDim2.new(0.5, 0, 0, PADDING/2)
+flightButton.AnchorPoint = Vector2.new(0.5, 0)
+local flightSliderInstance, getFlightSpeed_orig, updateFlightVis = createSliderUi("FlightSpeed", 1, 150, 50, flightControlFrame)
+getFlightSpeed = getFlightSpeed_orig
+flightSlider = flightSliderInstance
+
+-- Noclip Button
+noclipButton = createToggleButtonUi("Noclip", "Noclip", 2)
+noclipButton.LayoutOrder = 2
 noclipButton.Parent = mainMenu
+
+-- ESP Button
+espButton = createToggleButtonUi("ESP", "ESP", 3)
+espButton.LayoutOrder = 3
+espButton.Parent = mainMenu
+
+-- Speed Button and Slider
+speedControlFrame = Instance.new("Frame")
+speedControlFrame.Name = "SpeedControlFrame"
+speedControlFrame.BackgroundTransparency = 1
+speedControlFrame.Size = UDim2.new(1, 0, 0, CONTROL_FRAME_HEIGHT)
+speedControlFrame.LayoutOrder = 4
+speedControlFrame.Parent = mainMenu
+speedButton = createToggleButtonUi("Speed", "Speed", 4)
+speedButton.Parent = speedControlFrame
+speedButton.Position = UDim2.new(0.5, 0, 0, PADDING/2)
+speedButton.AnchorPoint = Vector2.new(0.5, 0)
+local speedSliderInstance, getWalkSpeed_orig, updateSpeedVis = createSliderUi("Speed", 16, 250, originalWalkSpeed, speedControlFrame)
+getWalkSpeed = getWalkSpeed_orig
+speedSlider = speedSliderInstance
+
+-- Placeholder Buttons
+teleportButton = createPlaceholderButtonUi("TeleportToPlayer", "Teleport to Player", 5)
+teleportButton.LayoutOrder = 5; teleportButton.Parent = mainMenu
+killPlayerButton = createPlaceholderButtonUi("KillPlayer", "Kill Player", 6)
+killPlayerButton.LayoutOrder = 6; killPlayerButton.Parent = mainMenu
+viewScriptsButton = createPlaceholderButtonUi("ViewServerScripts", "View Server Scripts", 7)
+viewScriptsButton.LayoutOrder = 7; viewScriptsButton.Parent = mainMenu
+btoolsButton = createPlaceholderButtonUi("Btools", "Btools", 8)
+btoolsButton.LayoutOrder = 8; btoolsButton.Parent = mainMenu
 
 local function getPlayerCharacter(player)
     return player and player.Character
@@ -491,9 +537,37 @@ local function toggleSpeed(enable)
     print("Speed Override " .. (enable and "Enabled with value: " .. getWalkSpeed() or "Disabled, speed reset to: " .. originalWalkSpeed))
 end
 
+flightButton.MouseButton1Click:Connect(function()
+    toggleFlight(not isFlying)
+    flightButton.Text = "Flight: " .. (isFlying and "ON" or "OFF")
+    flightButton.BackgroundColor3 = isFlying and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
+end)
+
 noclipButton.MouseButton1Click:Connect(function()
     toggleNoclip(not noclipEnabled)
     noclipButton.Text = "Noclip: " .. (noclipEnabled and "ON" or "OFF")
+    noclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
+end)
+
+espButton.MouseButton1Click:Connect(function()
+    toggleEsp(not espEnabled)
+    espButton.Text = "ESP: " .. (espEnabled and "ON" or "OFF")
+    espButton.BackgroundColor3 = espEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
+end)
+
+speedButton.MouseButton1Click:Connect(function()
+    toggleSpeed(not speedEnabled)
+    speedButton.Text = "Speed: " .. (speedEnabled and "ON" or "OFF")
+    speedButton.BackgroundColor3 = speedEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
+end)
+
+teleportButton.MouseButton1Click:Connect(function() print("Teleport to Player button clicked (placeholder).") end)
+killPlayerButton.MouseButton1Click:Connect(function() print("Kill Player button clicked (placeholder).") end)
+viewScriptsButton.MouseButton1Click:Connect(function() print("View Server Scripts button clicked (placeholder).") end)
+btoolsButton.MouseButton1Click:Connect(function() print("Btools button clicked (placeholder).") end)
+
+local isFloatingButtonDragging = false
+local floatingButtonDragStartPos = Vector2.new()
     noclipButton.BackgroundColor3 = noclipEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(80, 80, 80)
 end)
 
